@@ -140,7 +140,7 @@ dfTest_re <- dfTest[,booKeep]  # Use all but the useless columns
 
 Following this data "cleanup" `r sum(booKeep) -1` columns are retained for the prediction model and `r dim(dfTrain)[2] - sum(booKeep)` are discarded. The "classe" column (to be predicted) is also retained.   
 
-The updated Missing Values Map appears as follows
+The updated Missing Values Map appears as follows, note that there are now few missing values.  
 ```{r prep02,echo=FALSE, cache=TRUE, comment="04 Explore 03",cache.comments=FALSE}
 missmap(dfTrain_re, main = "Missing values(na) vs observed - After Processing", x.cex=0.6,y.cex=0.1)
 ```
@@ -172,7 +172,7 @@ Classification Tree was discarded as being less capable than Random Forest, GBM 
 Logistic Regression was discarded as it will require additional preparatory work with the data and is unlikely to out-perform the non-parametric approaches.  
 The Model Ensemble approach was discarded as being unnecessary in this case as initial investigation of the selected models suggested very good performance ie. marginal benfit to ensembling.  
 
-Default settings are used for training of both the Boosted and Random Forest models.  
+Default settings are used for training of the models.  
 
 ```{r fit_adab,echo=FALSE, cache=TRUE, comment="06 Train Adaboost",cache.comments=FALSE}
 # THIS ADABOOST PRETTY LIGHT ON CPU ! Takes about 5 mins
@@ -351,13 +351,13 @@ Data was partitioned into -
 This allows final verification of the Out Of Sample error rate separately from the "Out Of The Bag" error rate.  
 
 **Pre-Processing**  
-The proposed models are all non-parametric and these models are very resilient to unscaled predictors so data was neither centred nor scaled.  
+The proposed models are all resilient to unscaled predictors so data was neither centred nor scaled.  
 
 There was no need to use Principal Component Analysis to reduce the number of predictors as 
 
 -   The number used was evaluated in a reasonable amount of time (about 1 hour on the development machine using a single core of the 3 available)
 -   The chosen models are not sensitive to interactions between predictors so there was no need to reduce interactions  
--   the result did not seem to be an overfit given the OOB and OOS error rates.  
+-   The result did not seem to be an overfit given the OOB and OOS error rates.  
 
 Therefore PCA was NOT undertaken.  
 
@@ -376,7 +376,7 @@ The Random Forest model was selected as most appropriate. Run times were accepta
 Default model parameters were used throughout on the basis that the default produced such a good outcome further tuning was not required.  
 
 **Predictor Selection**  
-Predictors were evaluated for importance to (impact on) the model.The top 15 predictors (by importance) were selected.  
+Predictors were evaluated for importance to (impact on) the model. The top 15 predictors (by importance) were selected ofr use in the final model.  
 This process helps to avoid over-fitting. As a byproduct it also significantly reduces computational overhead.  
 
 **Performance**  
