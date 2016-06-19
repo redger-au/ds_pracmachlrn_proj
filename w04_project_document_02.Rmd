@@ -1,0 +1,426 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "redger"
+date: "June 16, 2016"
+output: 
+  html_document:
+    toc: true # table of content true
+    depth: 3  # upto three depths of headings (specified by #, ## and ###)
+    number_sections: true  ## if you want number sections at each table header
+    theme: united  # many options for theme, this one is my favorite.
+    highlight: tango  # specifies the syntax highlighting style
+---
+
+
+
+```{r init,echo=FALSE, cache=TRUE,error=FALSE,warning=FALSE,cache.comments=FALSE}
+# Define the necessary libraries
+library(Amelia)  # Display missing values in dataframe
+library(caret)    # For glm and Predict. GLM performs POORLY - don't use without lots of tuning
+library(randomForest)
+#library(rpart)   # Tree. Not a great performer
+library(adabag)  # Adaboost. Performs ok-ish. At least 2 wrong (of 20)
+#library(C50)     # C50 library for C5.0 algo (upmarket RF). Didn't perform so well
+#library(rattle)  # Used to plot Trees
+library(ggplot2)  # Plot functions
+library(knitr)    # Layout functions
+#
+# Acquire the data and initialise libraries
+strTrain_data_file <- "pml-training.csv"
+strTrain_data_url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+strTest_data_file <- "pml-testing.csv"
+strTest_data_url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+# setwd("/home/ubuntu/Downloads/coursera/data_science/08_practical_machine_learning/project_week04/")
+# If necessary, download the datasets
+if (!file.exists(strTrain_data_file)) {
+  download.file(strTrain_data_url, destfile = strTrain_data_file)
+}
+if (!file.exists(strTest_data_file)) {
+  download.file(strTest_data_url, destfile = strTest_data_file)
+}
+#
+dfTrain <- read.csv(strTrain_data_file,header=TRUE)  # 19,622 obs, 160 cols
+# dfTrain <- read.csv(strTrain_data_file,header=TRUE,
+#            na.strings=c("","NA","#DIV/0!"))    # Converts rubbish data directly
+#                                                # If I'd known at the time
+dfTest <- read.csv(strTest_data_file,header=TRUE)  # 20 obs, 160 cols
+# dfTest <- read.csv(strTest_data_file,header=TRUE,
+#            na.strings=c("","NA","#DIV/0!"))    # Converts rubbish data directly
+#                                                # If I'd known at the time
+```
+# Executive Summary  
+ The goal of this project was to use Machine Learning to investigate the tracking of exercise quality based on measurements taken by the type of devices widely available if wearable devices.  
+Different Machine Learning algorithms were used to predict the outcomes for 20 observations with "unknown" outcomes. Training data was provided.  
+Multiple models were considered, 3 were tried and 1 was selected as most appropriate.
+The Random Forest method produced a high quality result with an acceptable computational overhead.
+A small amount of refinement was performed to reduce the likelihood of overfitting - by selecting the highest importance (impact) predictors.  
+
+The final prediction for the 20 observations was scored 100% accurate by the Coursera grading software justifying the choice of the Random Forest approach.  
+
+# Background  
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+In this project, our goal was to use data from accelerometers on the belt, forearm, arm, and dumbell to predict exercise quality. The data was collected from 6 participants who were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+# Data Exploration  
+
+```{r exp01,echo=FALSE, cache=TRUE,cache.comments=FALSE}
+print("The Training dataset dimensions are:")
+dim (dfTrain)
+print("More detailed inspection of the Training dataset")
+#str (dfTrain)    # Includes column names, many factors and numerics. Lots of NAs
+str (dfTrain[,1:20])  # Review the first 20 columns (of 160)
+summary(dfTrain[,1:20])  # More detailed review of the first 20 columns
+#dim (dfTest)
+#str (dfTest)     # Includes column names, many factors and numerics. Lots of NAs
+```
+
+It appears from the above that -  
+
+-   There is sufficient data volume (`r dim (dfTrain)[1]` rows) in the Training dataset to provide for both training and a cross-validation set  
+-   There is a significant amount of missing and "invalid"" data (eg. "#DIV/)!")  
+
+```{r exp02,echo=FALSE, cache=TRUE, comment="02a Explore 01a",cache.comments=FALSE}
+# Display the missing values
+missmap(dfTrain, main = "Missing values(na) vs observed - Raw Data", x.cex=0.4,y.cex=0.1)
+```
+
+
+# Data Preparation  
+
+Given the nature of the data, the primary preparation is to recognise the various NA values and then assess the usefulness of the columns containing NAs.  
+
+For this pupose the following values are converted to NA  
+
+-   "NA"  
+-   ""  
+-   "#DIV/0!"  
+
+After transformation, any column containing more than 95% NAs will be ignored for predictive purposes. 
+Furthermore the first 7 columns appear to relate to the subject and experiment time of day so they will also be ignored for predictive purposes.  
+
+```{r prep,echo=FALSE, cache=TRUE, comment="03 Explore 02",cache.comments=FALSE}
+#
+# Have a look at the NAs in Train set, so many we should perhaps eliminate them.
+# In most cases these columns are all NAs bar 400 or so (19,216 / 19,622)
+strNames <- names(dfTrain)
+# OK, set for data cleanup
+booKeep <- rep(TRUE, length(strNames))
+numFactor_levels <- rep(-1, length(strNames))
+numNA_clip = 0.95  # 95% of 20,000 is about 19000
+numDIV0_clip <- 0.49 # 40% of 20,000 is about 8,000
+numLevels_clip = 2  # Need at least 5 "levels" for a valid factor variable
+j <- 0
+facNames <- rep("",2)
+dfTrain_temp <- dfTrain
+for (i in 1:length(strNames)) {
+    if (is.factor(dfTrain_temp[,i])) {
+        numFactor_levels[i] <- length(levels(dfTrain_temp[,i]))
+    }
+    if (sum(is.na(dfTrain_temp[,i])) / length(dfTrain_temp[,i]) > numNA_clip)  {
+        booKeep[i] <- FALSE
+    } else
+    if (sum(dfTrain_temp[,i]=="#DIV/0!")>0 | sum(dfTrain_temp[,i]=="")>0) {
+        booDivs <- dfTrain_temp[,i]=="#DIV/0!" | dfTrain_temp[,i]==""
+        dfTrain_temp[booDivs,i] <- NA
+        dfTrain_temp[,i] <- as.numeric(as.character(dfTrain_temp[,i]))
+        if (sum(is.na(dfTrain_temp[,i])) / length(dfTrain_temp[,i]) > numNA_clip)  {
+            booKeep[i] <- FALSE
+        }
+    }
+}
+booKeep[1:7] = FALSE  # The X variable (first in array) is a sequence number - ignore it
+                      # and the other first 6 - identify person and timeframe only
+#sum(booKeep) # Keep 53, Ignore 107 of the columns as being mostly useless ?
+
+dfTrain_re <- dfTrain_temp[,booKeep]  # Use all but the useless columns
+dfTest_re <- dfTest[,booKeep]  # Use all but the useless columns
+
+```
+
+Following this data "cleanup" `r sum(booKeep) -1` columns are retained for the prediction model and `r dim(dfTrain)[2] - sum(booKeep)` are discarded. The "classe" column (to be predicted) is also retained.   
+
+The updated Missing Values Map appears as follows
+```{r prep02,echo=FALSE, cache=TRUE, comment="04 Explore 03",cache.comments=FALSE}
+missmap(dfTrain_re, main = "Missing values(na) vs observed - After Processing", x.cex=0.6,y.cex=0.1)
+```
+
+```{r prep03,echo=FALSE, cache=TRUE, comment="05 Explore 04",cache.comments=FALSE}
+# We want to predict "classe" which is column 53
+# Create a sampled Subset for training and out-of-sample error assessment
+set.seed(3141)
+numSample <- createDataPartition(dfTrain_re[,53], p = 0.70,list=FALSE)
+#booSample <- sample(dfTrain_re,0.7,replace=FALSE)
+dfTrain_re_train <- dfTrain_re[numSample,]
+dfTrain_re_test <- dfTrain_re[-numSample,]
+```
+
+# Model Construction (how the model was built)  
+
+Prior to finalising the model several approaches were considered -  
+
+-   Classification Tree  
+-   Random Forest  
+-   Logistic Regression (General Linear Model)  
+-   Boosting (Adaboost)  
+-   Generalized Boosted Regression Modeling (GBM)  
+-   Combine Random Forest and GBM (say)  
+
+The Random Forest and Boosting approaches were investigated as highly likely to produce useable models and requiring minimal data manipulation (eg. centering and scaling, co-linearity reduction).  
+
+Classification Tree was discarded as being less capable than Random Forest, GBM or Adaboost.  
+Logistic Regression was discarded as it will require additional preparatory work with the data and is unlikely to out-perform the non-parametric approaches.  
+The Model Ensemble approach was discarded as being unnecessary in this case as initial investigation of the selected models suggested very good performance ie. marginal benfit to ensembling.  
+
+Default settings are used for training of both the Boosted and Random Forest models.  
+
+```{r fit_adab,echo=FALSE, cache=TRUE, comment="06 Train Adaboost",cache.comments=FALSE}
+# THIS ADABOOST PRETTY LIGHT ON CPU ! Takes about 5 mins
+set.seed(3141)
+mdlAdab_time <- system.time(mdlAdab <- boosting(classe~., data=dfTrain_re_train))  
+```
+
+```{r predict_adab, echo=FALSE, cache=TRUE, comment="07 Predict & Calc Adaboost",cache.comments=FALSE}
+prdAdab_train_train <- predict(mdlAdab,newdata=dfTrain_re_train)
+prdAdab_train_test <- predict(mdlAdab,newdata=dfTrain_re_test)
+prdAdab_test <- predict(mdlAdab,newdata=dfTest_re)
+#   [1] "B" "A" "B" "A" "A" "E" "D" "B" "A" "A" "C" "C" "B" "A" "E" "E" "A" "B" "A" "B"
+#       2 wrong - 11 and 19
+#        1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18  19  20
+#   [1]  B   A   B   A   A   E   D   B   A   A   B   C   B   A   E   E   A   B   B  B  
+numAdab_Miss_train_rate <- 1 - sum(diag(prdAdab_train_train$confusion[,1:5])) / 
+    sum(prdAdab_train_train$confusion[,1:5]) # = 0.05954721 OOB error rate
+numAdab_Miss_test_rate <- 1 - sum(diag(prdAdab_train_test$confusion[,1:5])) / 
+    sum(prdAdab_train_test$confusion[,1:5]) # = 0.05879354 OOS error rate
+#
+```
+
+```{r fit_gbm, echo=FALSE, cache=TRUE,comment="0- Train Gbm",warning=FALSE,cache.comments=FALSE}
+set.seed(3141)
+mdlGbm_time <- system.time(mdlGbm <- train(classe~.,data=dfTrain_re_train,method="gbm",
+             verbose=FALSE)) #,
+#            bag.fraction=0.7,cv.folds=5,verbose=FALSE))  # Doesn't work for some reason
+# About 20 minutes to run (1290 secs)
+# mdlGbm_gbm_time <- system.time(mdlGbm_gbm <- #
+#       gbm(classe~.,data=dfTrain_re_train,cv.folds=3,distribution="multinomial",bag.fraction=0.7))
+#  About 14 seconds run time
+```
+
+```{r predict_gbm, echo=FALSE, cache=TRUE,comment="0- Gbm Stats Create",cache.comments=FALSE}
+prdGbm_train_train <- predict(mdlGbm, newdata=dfTrain_re_train)
+prdGbm_train_test <- predict(mdlGbm, newdata=dfTrain_re_test)
+prdGbm_test <- predict(mdlGbm, newdata=dfTest_re)
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  # All correct
+#       1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  # ALL Correct - PERFECT (using 100% of train set)
+#
+# confusionMatrix(prdGbm_train_test, dfTrain_re_test$classe)
+# confusionMatrix(prdGbm_train_test, dfTrain_re_test$classe)$overall  # Accuracy ratings
+# confusionMatrix(prdGbm_train_train, dfTrain_re_train$classe)
+numGbm_Miss_train <- sum(as.character(prdGbm_train_train) != as.character(dfTrain_re_train$classe))
+numGbm_Miss_train_rate <- sum(numGbm_Miss_train) / length(dfTrain_re_train$classe) # =
+numGbm_Miss_test <- sum(as.character(prdGbm_train_test) != as.character(dfTrain_re_test$classe))
+numGbm_Miss_test_rate <- sum(numGbm_Miss_test) / length(dfTrain_re_test$classe) # = 0.007476636 OOS rate
+numGbm_Miss_train_rate_mdl <- 1 - sum(diag(mdlGbm$finalModel$confusion[,1:5])) /
+     sum(mdlGbm$finalModel$confusion[,1:5])  # OOB error rate = 0.007134018
+```
+
+```{r fit_rf, echo=FALSE, cache=TRUE,comment="08 Train Rf",cache.comments=FALSE}
+# Separated out for operational management - this takes a while (approx 60 mins)
+set.seed(3141)
+mdlRf_time <- system.time(mdlRf <- train(classe~., data=dfTrain_re_train, method = "rf"))
+```
+
+```{r predict_rf, echo=FALSE, cache=TRUE, comment="09 Predict & Calc Rf",cache.comments=FALSE}
+prdRf_train_train <- predict(mdlRf,newdata=dfTrain_re_train)
+    # Use to find OOB Error Rate (out of bag)
+prdRf_train_test <- predict(mdlRf,newdata=dfTrain_re_test)    
+    # Use to find OOS Error Rate (out of sample)
+prdRf_test <- predict(mdlRf,newdata=dfTest_re)   # To answer Quiz questions
+#> prdRf_test
+#       1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  
+    # ALL Correct - PERFECT (using 100% of train set)
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  
+    # Using 70% of Train set only, 100% accurate again !
+#mdlRf$finalModel # Look at model basics
+#varImp(mdlRf)  # Which variables are useful ?
+#
+numRf_Miss_train <- sum(as.character(prdRf_train_train) != as.character(dfTrain_re_train$classe))
+numRf_Miss_train_rate <- sum(numRf_Miss_train) / length(dfTrain_re_train$classe) # =
+numRf_Miss_test <- sum(as.character(prdRf_train_test) != as.character(dfTrain_re_test$classe))
+numRf_Miss_test_rate <- sum(numRf_Miss_test) / length(dfTrain_re_test$classe) # = 0.007476636 OOS rate
+numRf_Miss_train_rate_mdl <- 1 - sum(diag(mdlRf$finalModel$confusion[,1:5])) /
+     sum(mdlRf$finalModel$confusion[,1:5])  # OOB error rate = 0.007134018
+```
+
+After training the models  
+  
+| Model           |  Train OOB Error Rate |  OOS Error Rate |  Run Time (secs) |  
+|:--------------- | ---------------------:| ---------------:| ----------------:|  
+Boosting        | `r paste(round(100*numAdab_Miss_train_rate,4),"%")` |  `r paste(round(100*numAdab_Miss_test_rate,4),"%")` | `r paste(mdlAdab_time[3])` |  
+GBM             | `r paste(round(100*numGbm_Miss_train_rate_mdl,4),"%")` |  `r paste(round(100*numGbm_Miss_test_rate,4),"%")` | `r paste(mdlGbm_time[3])` |  
+Random Forest   | `r paste(round(100*numRf_Miss_train_rate_mdl,4),"%")` |  `r paste(round(100*numRf_Miss_test_rate,4),"%")` | `r paste(mdlRf_time[3])` |  
+
+On the basis of the above data we chose the Random Forest model (it has the lower Out Of Bag and Out Of Sample error rates) as our preferred approach and will use that to generate the final test set prediction.  
+  
+For the Random Forest model, the relative importance of predictors is  
+```{r rf_cross_val, echo=FALSE, cache=TRUE,cache.comments=FALSE}
+# Generate the Predictor Cross Validation data for tuning the RF model
+set.seed(3141)
+rfcvRf <- rfcv(dfTrain_re_train[,-53],dfTrain_re_train[,53])
+```
+
+```{r plot_tune, echo=FALSE, cache=TRUE, warning=FALSE,cache.comments=FALSE}
+#par(mfrow = c(1, 2)) # 1 x 2 pictures on one plot
+plot(varImp(mdlRf), main = "Importance of Top 52 Variables", top = 52)
+#with(rfcvRf, plot(n.var, error.cv, log="x", type="o", lwd=2,
+plot(rfcvRf$n.var, rfcvRf$error.cv, log="x", type="o", lwd=2,
+     xlab="Number Of Predictors",
+     ylab="Cross Validation Error Rate",
+     main="Error Rate By Number Of Predictors")  # Nice plot, 15 predictors optimum
+```
+
+From these plots we can easily see that the top 15 predictors are adding to model quality. Any more predictors than those 15 risk over-fitting.
+
+Generate a new model, based on the top 15 Predictors, by "importance".
+```{r rf2_fit,echo=FALSE, cache=TRUE,cache.comments=FALSE}
+strCols_fit <- rownames(varImp(mdlRf)$importance)[1:52]  
+                    # Importance > (13 => 15, 9 => 20, 6 => 25, 5 => 30)
+booRow_names <- (varImp(mdlRf)$importance>13)[1:52]  # Set based on Importance and number rows reqd
+strCols_fit <- c(strCols_fit[booRow_names],"classe")
+set.seed(3141)
+mdlRf2_time <- system.time(mdlRf2 <- train(classe~., 
+    data=dfTrain_re_train[,strCols_fit], method = "rf"))
+prdRf2_train_train <- predict(mdlRf2,newdata=dfTrain_re_train[,strCols_fit])
+prdRf2_train_test <- predict(mdlRf2,newdata=dfTrain_re_test[,strCols_fit])    
+                            # Use to find OOS Error Rate (out of sample)
+prdRf2_test <- predict(mdlRf2,newdata=dfTest_re[,strCols_fit[1:length(strCols_fit)-1]])   
+                            # To answer Quiz questions
+numRf2_Miss_train <- sum(as.character(prdRf2_train_train) != as.character(dfTrain_re_train$classe))
+numRf2_Miss_train_rate <- sum(numRf2_Miss_train) / length(dfTrain_re_train$classe) # =
+numRf2_Miss_test <- sum(as.character(prdRf2_train_test) != as.character(dfTrain_re_test$classe))
+numRf2_Miss_test_rate <- sum(numRf2_Miss_test) / length(dfTrain_re_test$classe) # = 0.007476636 OOS rate
+numRf2_Miss_train_rate_mdl <- 1 - sum(diag(mdlRf2$finalModel$confusion[,1:5])) /
+     sum(mdlRf2$finalModel$confusion[,1:5])  # OOB error rate = 0.007134018
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  
+                                    # All correct at 30 preds (Imp >5) in 1716 Secs (30 mins)
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  
+                                    # All correct at 15 preds (Imp >13) in 970 Secs (15 mins)
+#       1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+#   [1] B A B A A E D B A  A  B  C  B  A  E  E  A  B  B  B  
+                                    # ALL Correct - PERFECT (using 100% of train set)
+#
+# confusionMatrix(mdlRf2)
+# confusionMatrix(prdRf2_train_train2, dfTrain_re_train$classe)  # Good info
+# confusionMatrix(prdRf2_train_test2, dfTrain_re_test$classe)  # Good info
+# confusionMatrix(prdRf2_train_test2, dfTrain_re_test$classe)$overall  # [1] = accuracy [3] = CI Low [4] = Accuracy High
+# confusionMatrix(prdRf2_train_test2, dfTrain_re_test$classe)$overall[c(1,3,4)] # Accuracy + CI
+
+```
+
+The predictors selected for use are -  
+`r strCols_fit[1:length(strCols_fit)-1]`  
+
+And the resulting error rates (Note second row) are  
+
+| Model           |  Train OOB Error Rate |  OOS Error Rate |  Run Time (secs) |  
+|:--------------- | ---------------------:| ---------------:| ----------------:|  
+Random Forest   | `r paste(round(100*numRf_Miss_train_rate_mdl,4),"%")` |  `r paste(round(100*numRf_Miss_test_rate,4),"%")` | `r paste(mdlRf_time[3])` |  
+Refined Random Forest   | `r paste(round(100*numRf2_Miss_train_rate_mdl,4),"%")` |  `r paste(round(100*numRf2_Miss_test_rate,4),"%")` | `r paste(mdlRf2_time[3])` |  
+
+So our error rate has climbed a little but we have reduced the chance of overfitting.  
+
+# Cross Validation (how cross validation was used)  
+Part of what a random forest does is bootstrap the data i.e., draw random samples with replacement from the original sample. In each instance, a model is fit to the data drawn. Then this model is applied to predict the data NOT drawn (the "out-of-bag" sample). This is a very smart trick to approximate the true expected out-of-sample error rate. The final model provides a "Confusion Matrix" which represents the outcome of this cross validation.
+Thus cross-validation is a design feature of the random forest method used to build the final model.
+
+Additionally, in this exercise we have selected 70% of the original "Training" dataset to train the selected model with and reserved the other 30% as a cross-validation subset. This allows us to calculate an Out Of Sample error rate based on a sample completely independent of data used to train the model.
+
+# Summary Of Choices (architectural decisions)  
+
+**Data Exploration & Discard Columns**  
+Any column with a high proportion of NAs (over `r paste(numNA_clip*100,"%")`) is ignored for the purposes of prediction. This assessment was performed after reclassifying some data as NA (ie. blank and "#DIV/0!" values in factor columns).  
+
+**Data Partitioning**  
+Data was partitioned into -  
+
+-   A random sample of 70% of the provided "training" data used for model training  
+-   The remaining 30% of the originally provided "training" data to be used for model cross validation.  
+
+This allows final verification of the Out Of Sample error rate separately from the "Out Of The Bag" error rate.  
+
+**Pre-Processing**  
+The proposed models are all non-parametric and these models are very resilient to unscaled predictors so data was neither centred nor scaled.  
+
+There was no need to use Principal Component Analysis to reduce the number of predictors as 
+
+-   The number used was evaluated in a reasonable amount of time (about 1 hour on the development machine using a single core of the 3 available)
+-   The chosen models are not sensitive to interactions between predictors so there was no need to reduce interactions  
+-   the result did not seem to be an overfit given the OOB and OOS error rates.  
+
+Therefore PCA was NOT undertaken.  
+
+**Model Choice**  
+This is a Classification problem. The following model options were considered and DISCARDED -  
+
+-   Logistic Regression (Generalised Linear Model)  
+-   Decision Tree  
+-   Boosted (Adaboost)  
+-   Generalised Boosted Regression Modelling (GBM)  
+-   Model Ensemble  
+
+The Random Forest model was selected as most appropriate. Run times were acceptable and the model itself performed admirably. The 20 final test cases were predicted perfectly and the OOB and OOS error rates were both low which inspires confidence in the quality of resulting predictions.  
+
+**Model Parameters**  
+Default model parameters were used throughout on the basis that the default produced such a good outcome further tuning was not required.  
+
+**Predictor Selection**  
+Predictors were evaluated for importance to (impact on) the model.The top 15 predictors (by importance) were selected.  
+This process helps to avoid over-fitting. As a byproduct it also significantly reduces computational overhead.  
+
+**Performance**  
+There is an opporunity to improve the computational performance of the Random Forest model -  
+
+-   Using a "cluster" approach to enable the use of more CPU cores.
+-   Changing the model parameters to change the "method" to reduce the number of bootstrap iterations or number of variables sampled (mtry)  
+-   Reducing the number of predictors eg. selecting via PCA or model importance.  
+
+Of these, the Number Of Predictors was reduced, primarily to reduce the possibility of over-fitting, but it also reduced the computation overhead and improved performance by aprroximately 1/3.  
+
+
+# Out Of Sample Error  
+
+The `r (paste("Refined Random Forest Out Of Bag error rate = ",round(numRf2_Miss_train_rate_mdl *100,2),"%"))`.    
+
+The calculated `r (paste("Out Of Sample error rate = ",round(numRf2_Miss_test_rate *100,2),"%"))`.  
+```{r oos_matrix, echo=FALSE, cache=TRUE,out.width=12,cache.comments=FALSE}
+
+## Process VIF data into a nice table
+  cfm_prdRf2_train_test <- as.data.frame(confusionMatrix(prdRf2_train_test,
+                                dfTrain_re_test$classe)$overall[1:6])
+  cfm_prdRf2_train_test$rowname <- row.names(cfm_prdRf2_train_test)
+  names(cfm_prdRf2_train_test) <- c("Value","rowname")
+  cfm_prdRf2_train_test$rowname <- NULL
+  kable(t(cfm_prdRf2_train_test),digits=5,caption="Out Of Sample Test Set - Confusion Matrix")
+```
+
+Thus the Out Of Sample Error calculated from the test data confusion matrix is `r library(caret);paste(round((1 - confusionMatrix(prdRf2_train_test, dfTrain_re_test$classe)$overall[1])*100,2),"%")` (1 - Accuracy) and the lower limit on the 95% confidence interval is `r library(caret);paste(round((1 - confusionMatrix(prdRf2_train_test, dfTrain_re_test$classe)$overall[3])*100,2),"%")`   
+
+ie. we can be 95% confident that our out of sample error is lower than `r library(caret);paste(round((1 - confusionMatrix(prdRf2_train_test, dfTrain_re_test$classe)$overall[3])*100,2),"%")`.  
+
+# Final Prediction (predict 20 different test cases)
+The final predictions produced from our model are -  
+`r prdRf_test`  
+which the Coursera software assessed as 100% correct!
+
+# References
+http://groupware.les.inf.puc-rio.br/har#collaborators  
+http://groupware.les.inf.puc-rio.br/public/papers/2012.Ugulino.WearableComputing.HAR.Classifier.RIBBON.pdf  
+https://cran.r-project.org/web/packages/randomForest/randomForest.pdf  
+https://rayli.net/blog/data/top-10-data-mining-algorithms-in-plain-r/  
+
+# Appendix - Code
+
+```{r final_code, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE,cache.comments=FALSE}
+```
